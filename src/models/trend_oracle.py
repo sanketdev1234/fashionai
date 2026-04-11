@@ -132,7 +132,10 @@ class TrendOracle:
         for (cat, val), model in self._models.items():
             future = model.make_future_dataframe(periods=h)
             fc     = model.predict(future)
-            self._forecasts[(cat, val)] = fc[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(h)
+            fc_tail = fc[["ds", "yhat", "yhat_lower", "yhat_upper"]].tail(h).copy()
+            fc_tail["yhat"]       = fc_tail["yhat"].clip(lower=0)
+            fc_tail["yhat_lower"] = fc_tail["yhat_lower"].clip(lower=0)
+            self._forecasts[(cat, val)] = fc_tail
 
         return self._forecasts
 
@@ -189,6 +192,10 @@ class TrendOracle:
         combined = pd.concat(frames)
         pivot = combined.groupby(["value", "week"])["yhat"].mean().reset_index()
         pivot.rename(columns={"yhat": "avg_demand"}, inplace=True)
+        if pivot["avg_demand"].max() > 0:
+            pivot["avg_demand"] = (
+                pivot["avg_demand"] / pivot["avg_demand"].max() * 100
+            ).round(2)
         return pivot
 
 

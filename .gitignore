@@ -6,7 +6,6 @@ __pycache__/
 *.pyd
 .Python
 pip-log.txt
-pip-delete-this-directory.txt
 
 # ─── Virtual environments ─────────────────────────────────────────────────────
 .env
@@ -26,12 +25,15 @@ artifacts/size_model_rf.pkl
 artifacts/trend_model.pkl
 artifacts/pose_landmarker.task
 
-# ─── Raw dataset (too large for Git — store on Drive/S3/HuggingFace) ──────────
+# ─── Raw dataset (too large for Git) ──────────────────────────────────────────
 data/images/
 data/size_data.csv
 data/trend_data.csv
+data/trend_data_raw/
+data/trend_data.synthetic_backup_*.csv
+data/trend_data_*.csv
 
-# ─── User uploads (runtime files, never commit) ───────────────────────────────
+# ─── User uploads (runtime, never commit) ─────────────────────────────────────
 uploads/
 
 # ─── OS files ─────────────────────────────────────────────────────────────────
@@ -48,9 +50,6 @@ desktop.ini
 .vscode/
 .idea/
 *.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
 *.swp
 *.swo
@@ -64,31 +63,24 @@ desktop.ini
 .coverage
 htmlcov/
 coverage.xml
-*.cover
-nosetests.xml
-test-results/
 
 # ─── Build / dist ─────────────────────────────────────────────────────────────
 build/
 dist/
 *.egg-info/
 *.egg
-MANIFEST
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 logs/
 
-# ─── Environment variables (secrets) ─────────────────────────────────────────
-.env
+# ─── Secrets ──────────────────────────────────────────────────────────────────
 .env.*
 secrets.yaml
 secrets.json
-
-# ─── Streamlit ────────────────────────────────────────────────────────────────
 .streamlit/secrets.toml
 
-# ─── Temporary / misc ─────────────────────────────────────────────────────────
+# ─── Temp ─────────────────────────────────────────────────────────────────────
 *.tmp
 *.bak
 *.orig

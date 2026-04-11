@@ -37,7 +37,7 @@ st.set_page_config(
 )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.image("https://via.placeholder.com/200x60?text=FashionAI", use_column_width=True)
+st.sidebar.image("https://via.placeholder.com/200x60?text=FashionAI", use_container_width=True)
 st.sidebar.markdown("### Navigation")
 tab_selection = st.sidebar.radio(
     "Choose a module",
@@ -109,7 +109,7 @@ if tab_selection == "👗 Visual Search":
         col_input, col_sep, col_results = st.columns([1, 0.05, 2])
         with col_input:
             st.subheader("Query Image")
-            st.image(uploaded, use_column_width=True)
+            st.image(uploaded, use_container_width=True)
 
         with col_results:
             st.subheader("Recommendations")
@@ -124,7 +124,7 @@ if tab_selection == "👗 Visual Search":
                         try:
                             pil = Image.open(rec["path"])
                             st.image(pil, caption=f"Score: {rec['score']:.3f}",
-                                     use_column_width=True)
+                                     use_container_width=True)
                         except Exception:
                             st.warning(f"Image not found:\n{rec['path']}")
             else:
