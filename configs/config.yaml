@@ -1,0 +1,76 @@
+# configs/config.yaml  ── master configuration for FashionAI
+
+project:
+  name: FashionAI
+  version: "1.0.0"
+  seed: 42
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+  images_dir: data/images          # raw fashion product images (your 45k dataset)
+  size_data:  data/size_data.csv   # synthetic size/measurement CSV (you'll generate this)
+  trend_data: data/trend_data.csv  # historical search/sales data for Prophet
+  embeddings: artifacts/embeddings.pt
+  faiss_index: artifacts/faiss.index
+  size_model:  artifacts/size_model.pt
+  trend_model: artifacts/trend_model.pkl
+  filenames:   artifacts/filenames.pkl
+
+# ── Feature Extractor (PyTorch ResNet-50) ────────────────────────────────────
+feature_extractor:
+  backbone: resnet50          # resnet50 | efficientnet_b3 | vit_b_16
+  image_size: 224
+  embedding_dim: 2048
+  batch_size: 64
+  num_workers: 4
+  device: auto                # auto → cuda if available, else cpu
+
+# ── FAISS Vector Index ────────────────────────────────────────────────────────
+faiss:
+  n_neighbors: 6
+  index_type: Flat            # Flat | IVFFlat | HNSW
+  metric: cosine              # cosine | l2
+
+# ── Size Fit Model (Random Forest + MLP Ensemble) ────────────────────────────
+size_model:
+  rf_n_estimators: 200
+  rf_max_depth: 15
+  mlp_hidden: [256, 128, 64]
+  mlp_dropout: 0.3
+  epochs: 50
+  batch_size: 256
+  lr: 0.001
+  labels:
+    - "Too Small"
+    - "Perfect Fit"
+    - "Too Large"
+
+# ── CV Anthropometry (MediaPipe) ─────────────────────────────────────────────
+cv_anthropometry:
+  landmarks:
+    shoulder_left:  11
+    shoulder_right: 12
+    hip_left:       23
+    hip_right:      24
+    nose:           0
+  reference_object_cm: 20.0    # e.g. A4 paper width used as real-world reference
+
+# ── Trend Forecasting (Prophet) ───────────────────────────────────────────────
+trend_forecasting:
+  forecast_horizon_days: 90
+  seasonality_mode: multiplicative
+  categories:
+    - color
+    - silhouette
+    - category
+
+# ── API ───────────────────────────────────────────────────────────────────────
+api:
+  host: 0.0.0.0
+  port: 8000
+  reload: true
+
+# ── Streamlit Dashboard ───────────────────────────────────────────────────────
+dashboard:
+  port: 8501
+  top_k_recommendations: 5

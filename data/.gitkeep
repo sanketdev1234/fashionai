@@ -1,0 +1,12 @@
+This directory is intentionally empty.
+
+Dataset files are excluded from Git because they are large.
+Run the following to regenerate the CSV files:
+
+    python scripts/generate_data.py
+
+For the image dataset:
+  Place your fashion product images (JPEG/PNG) in data/images/
+  then rebuild the FAISS index:
+
+    python scripts/train.py --stage index

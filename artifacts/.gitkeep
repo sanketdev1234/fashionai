@@ -1,0 +1,15 @@
+This directory is intentionally empty.
+
+Model artifacts are excluded from Git because they are large binary files.
+Run the following command to regenerate them:
+
+    python scripts/train.py --stage all
+
+Files that will appear here after training:
+  - embeddings.pt          (FAISS embedding vectors)
+  - faiss.index            (FAISS vector index)
+  - filenames.pkl          (image filename mapping)
+  - size_model.pt          (MLP fit model weights)
+  - size_model_rf.pkl      (Random Forest fit model)
+  - trend_model.pkl        (Prophet trend oracle)
+  - pose_landmarker.task   (MediaPipe model — auto-downloaded on first API start)
