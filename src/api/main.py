@@ -1,16 +1,15 @@
 """
 src/api/main.py
 ────────────────
-FastAPI application — single modular monolith exposing three modules:
+FastAPI application — single modular monolith.
 
   POST /recommend          → Visual similarity search (image upload)
   POST /fit/scan           → CV body scan from a user photo
-  POST /fit/predict        → Size fit verdict given measurements
+  POST /fit/predict        → Fit verdict: brand + category + label size (NEW)
+  GET  /fit/sizes          → Available brands, categories, labels (NEW)
   GET  /trends/top         → Top-N trending fashion items
   GET  /trends/heatmap     → Demand heatmap data for a category
   GET  /health             → Health check
-
-All heavy models are loaded once at startup via lifespan context.
 
 Run:
     uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
@@ -39,7 +38,7 @@ from src.models.cv_anthropometry import CVAnthropometry
 from src.models.trend_oracle import TrendOracle
 
 
-# ─── Globals (populated in lifespan) ─────────────────────────────────────────
+# ─── Globals ──────────────────────────────────────────────────────────────────
 
 extractor:    FashionFeatureExtractor | None = None
 size_model:   SizeFitModel            | None = None
@@ -59,11 +58,9 @@ async def lifespan(app: FastAPI):
 
     logger.info("Loading models…")
 
-    # Visual index
     extractor = FashionFeatureExtractor(CFG)
-    extractor.build_index()   # loads from disk if artifacts exist
+    extractor.build_index()
 
-    # Size model
     size_model = SizeFitModel(CFG)
     size_path  = CFG["paths"]["size_model"]
     if Path(size_path).exists():
@@ -71,12 +68,10 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("[API] size_model.pt not found — run scripts/train.py --stage size")
 
-    # CV scanner
     cv_scanner = CVAnthropometry(
         reference_width_cm=CFG["cv_anthropometry"]["reference_object_cm"]
     )
 
-    # Trend Oracle
     trend_oracle = TrendOracle(CFG)
     trend_path   = CFG["paths"]["trend_model"]
     if Path(trend_path).exists():
@@ -97,7 +92,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="FashionAI API",
     description="Visual Recommendation + Fit Prediction + Trend Forecasting",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -130,26 +125,17 @@ async def recommend(
     file: Annotated[UploadFile, File(description="Fashion product image (JPEG/PNG)")],
     top_k: int = 5,
 ):
-    """
-    Visual similarity search.
-
-    Input  : image file (multipart/form-data), top_k (int, default 5)
-    Output : {"recommendations": [{"path": str, "score": float}, ...]}
-    """
     if extractor is None or extractor.faiss_index is None:
-        raise HTTPException(503, "Visual index not ready. Build it first.")
-
+        raise HTTPException(503, "Visual index not ready.")
     try:
         contents = await file.read()
         pil_img  = Image.open(io.BytesIO(contents)).convert("RGB")
     except Exception as e:
         raise HTTPException(400, f"Cannot parse image: {e}")
-
     try:
         results = extractor.recommend(pil_img, top_k=top_k)
     except Exception as e:
         raise HTTPException(500, f"Recommendation failed: {e}")
-
     return {"recommendations": results}
 
 
@@ -160,16 +146,8 @@ async def scan_body(
     file: Annotated[UploadFile, File(description="User upper-body photo")],
     reference_px: Optional[float] = Form(default=None),
 ):
-    """
-    Extract body measurements from a user photo via MediaPipe.
-
-    Input  : user photo (front-facing, upper body visible)
-             reference_px: pixel width of A4 paper in the frame (optional but recommended)
-    Output : {shoulder_width_cm, chest_width_cm, torso_length_cm, arm_length_cm, confidence}
-    """
     if cv_scanner is None:
         raise HTTPException(503, "CV scanner not initialised.")
-
     try:
         contents = await file.read()
         nparr    = np.frombuffer(contents, np.uint8)
@@ -177,56 +155,108 @@ async def scan_body(
         bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     except Exception as e:
         raise HTTPException(400, f"Cannot decode image: {e}")
-
     try:
         result = cv_scanner.measure(bgr, reference_px=reference_px, annotate=False)
     except ValueError as e:
         raise HTTPException(422, str(e))
-
     return result.to_dict()
+
+
+# ─── Size Chart Lookup ────────────────────────────────────────────────────────
+
+@app.get("/fit/sizes", tags=["Fit"])
+def get_sizes(brand: Optional[str] = None, category: Optional[str] = None):
+    """
+    Return available brands, categories, and label sizes from the size chart.
+
+    Query params:
+      brand    (optional) → filter categories for this brand
+      category (optional) → filter labels for this brand+category
+
+    Output:
+      {brands, categories, labels, item_cm (if brand+category+label given)}
+    """
+    if size_model is None:
+        raise HTTPException(503, "Size model not loaded.")
+
+    brands = size_model.get_brands()
+
+    if brand and category:
+        labels  = size_model.get_labels(brand, category)
+        cats    = size_model.get_categories(brand)
+        return {"brands": brands, "categories": cats, "labels": labels}
+    elif brand:
+        cats = size_model.get_categories(brand)
+        return {"brands": brands, "categories": cats, "labels": []}
+    else:
+        return {"brands": brands, "categories": [], "labels": []}
+
+
+@app.get("/fit/resolve", tags=["Fit"])
+def resolve_size(brand: str, category: str, label: str):
+    """
+    Resolve a brand + category + label to actual measurements in cm.
+
+    Output: {shoulder, chest, torso, arm} in cm
+    """
+    if size_model is None:
+        raise HTTPException(503, "Size model not loaded.")
+    item_cm = size_model.resolve_item_cm(brand, category, label)
+    if item_cm is None:
+        raise HTTPException(404, f"Size not found: {brand}/{category}/{label}")
+    return item_cm
 
 
 # ─── Fit Prediction ───────────────────────────────────────────────────────────
 
 class FitPredictRequest(BaseModel):
-    user_body_cm: dict   # {"shoulder_width": 44.0, "chest_width": 96.0, ...}
-    item_size_cm: dict   # {"shoulder_width": 46.0, "chest_width": 100.0, ...}
-    brand_name:   str = "unknown"
+    user_body_cm:      dict   # from body scan
+    brand_name:        str    # e.g. "BrandA"
+    garment_category:  str    # e.g. "tshirt", "shirt", "jacket", "dress"
+    label_size:        str    # e.g. "S", "M", "L", "XL"
 
     model_config = {"json_schema_extra": {"example": {
-        "user_body_cm": {"shoulder_width": 44.0, "chest_width": 94.0,
-                         "torso_length": 44.0, "arm_length": 58.0},
-        "item_size_cm": {"shoulder_width": 47.0, "chest_width": 102.0,
-                         "torso_length": 46.0, "arm_length": 60.0},
-        "brand_name": "BrandA",
+        "user_body_cm": {
+            "shoulder_width": 44.0, "chest_width": 94.0,
+            "torso_length": 44.0,   "arm_length": 58.0,
+        },
+        "brand_name":       "BrandA",
+        "garment_category": "tshirt",
+        "label_size":       "M",
     }}}
 
 
 @app.post("/fit/predict", tags=["Fit"])
 def predict_fit(req: FitPredictRequest):
     """
-    Predict how an item will fit given user measurements and item specs.
+    Predict fit from brand + category + label size.
 
-    Input  : FitPredictRequest JSON body
-    Output : {label, confidence, clearance (per dimension), message}
+    The system maps label → actual cm using the size chart internally.
+    User never needs to know the garment measurements.
+
+    Output: {label, confidence, clearance, message, item_size_cm}
     """
     if size_model is None or not size_model._is_trained:
-        raise HTTPException(503, "Size model not trained. Run scripts/train.py --stage size")
+        raise HTTPException(503, "Size model not trained.")
 
     try:
         verdict = size_model.predict(FitRequest(
             user_body_cm=req.user_body_cm,
-            item_size_cm=req.item_size_cm,
             brand_name=req.brand_name,
+            garment_category=req.garment_category,
+            label_size=req.label_size,
         ))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     except Exception as e:
         raise HTTPException(500, f"Prediction error: {e}")
 
     return {
-        "label":      verdict.label,
-        "confidence": round(verdict.confidence, 3),
-        "clearance":  verdict.clearance,
-        "message":    verdict.message,
+        "label":        verdict.label,
+        "confidence":   round(verdict.confidence, 3),
+        "clearance":    verdict.clearance,
+        "message":      verdict.message,
+        "item_size_cm": verdict.item_size_cm,   # resolved cm shown to user
     }
 
 
@@ -234,23 +264,13 @@ def predict_fit(req: FitPredictRequest):
 
 @app.get("/trends/top", tags=["Trends"])
 def top_trends(n: int = 10):
-    """
-    Return top-N trending fashion items ranked by forecast growth.
-
-    Output: [{"category", "value", "growth_pct", "peak_date"}, ...]
-    """
     if trend_oracle is None or not trend_oracle._is_fitted:
-        raise HTTPException(503, "Trend Oracle not fitted. Run scripts/train.py --stage trend")
+        raise HTTPException(503, "Trend Oracle not fitted.")
     return {"trends": trend_oracle.top_trends(n=n)}
 
 
 @app.get("/trends/heatmap", tags=["Trends"])
 def trend_heatmap(category: str = "color"):
-    """
-    Return demand heatmap data for a category (color | silhouette | garment_type).
-
-    Output: [{"value", "week", "avg_demand"}, ...]
-    """
     if trend_oracle is None or not trend_oracle._is_fitted:
         raise HTTPException(503, "Trend Oracle not ready.")
     df = trend_oracle.heatmap_data(category=category)
