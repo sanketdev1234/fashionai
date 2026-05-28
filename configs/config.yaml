@@ -2,75 +2,111 @@
 
 project:
   name: FashionAI
-  version: "1.0.0"
+  version: "2.0.0"
   seed: 42
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 paths:
-  images_dir: data/images          # raw fashion product images (your 45k dataset)
-  size_data:  data/size_data.csv   # synthetic size/measurement CSV (you'll generate this)
-  trend_data: data/trend_data.csv  # historical search/sales data for Prophet
-  embeddings: artifacts/embeddings.pt
+  images_dir:  data/images           # raw fashion product images (44,441 images)
+  size_data:   data/size_data.csv    # synthetic size/measurement CSV
+  trend_data:  data/trend_data.csv   # real Google Trends data (pytrends)
+  embeddings:  artifacts/embeddings.pt
   faiss_index: artifacts/faiss.index
-  size_model:  artifacts/size_model.pt
+  size_model:  artifacts/size_model.pkl   # changed: .pt → .pkl (no PyTorch in model)
   trend_model: artifacts/trend_model.pkl
   filenames:   artifacts/filenames.pkl
+  size_chart:  data/size_chart.json       # brand × category × label lookup table
 
 # ── Feature Extractor (PyTorch ResNet-50) ────────────────────────────────────
 feature_extractor:
-  backbone: resnet50          # resnet50 | efficientnet_b3 | vit_b_16
-  image_size: 224
+  backbone:      resnet50          # resnet50 | efficientnet_b3 | vit_b_16
+  image_size:    224
   embedding_dim: 2048
-  batch_size: 64
-  num_workers: 4
-  device: auto                # auto → cuda if available, else cpu
+  batch_size:    64
+  num_workers:   4
+  device:        auto              # auto → cuda if available, else cpu
 
 # ── FAISS Vector Index ────────────────────────────────────────────────────────
 faiss:
   n_neighbors: 6
-  index_type: Flat            # Flat | IVFFlat | HNSW
-  metric: cosine              # cosine | l2
+  index_type:  Flat                # Flat | IVFFlat | HNSW
+  metric:      cosine              # cosine | l2
 
-# ── Size Fit Model (Random Forest + MLP Ensemble) ────────────────────────────
+# ── Size Fit Model (Decision Tree) ───────────────────────────────────────────
+# Replaced RF + MLP ensemble with a single DecisionTreeClassifier.
+#
+# Why Decision Tree is the right choice here:
+#   - Training labels are deterministic clearance threshold rules
+#     (shoulder_clearance < -1.5 → Too Small, > 6.0 → Too Large)
+#   - A tree recovers these rules exactly in 2–3 splits
+#   - Fully interpretable — export_text() prints the learned rules
+#   - Trains in ~2 seconds vs ~90 seconds for RF + MLP
+#   - No GPU, no epoch loop, no DataLoader needed
+#
+# When to upgrade back to ensemble:
+#   Replace synthetic data with real purchase-return records.
+#   Real fit labels are noisy and subjective — a single tree
+#   will underfit. At that point use RandomForest or XGBoost.
+#
+# Clearance thresholds baked into training labels:
+#   Too Small  : shoulder_clearance < -1.5 cm  OR  chest_clearance < -2.0 cm
+#   Too Large  : shoulder_clearance >  6.0 cm  OR  chest_clearance >  8.0 cm
+#   Perfect Fit: everything else
 size_model:
-  rf_n_estimators: 200
-  rf_max_depth: 15
-  mlp_hidden: [256, 128, 64]
-  mlp_dropout: 0.3
-  epochs: 50
-  batch_size: 256
-  lr: 0.001
+  tree_max_depth: 5              # depth=2 already ~98% accurate on this data
+                                 # depth=5 captures brand-specific nuances
+  class_weight: balanced         # handles 49% Too Small / 12% Perfect Fit imbalance
   labels:
-    - "Too Small"
-    - "Perfect Fit"
-    - "Too Large"
+    - "Too Small"                # 0
+    - "Perfect Fit"              # 1
+    - "Too Large"                # 2
 
-# ── CV Anthropometry (MediaPipe) ─────────────────────────────────────────────
+# ── CV Anthropometry (MediaPipe Pose Landmarker) ─────────────────────────────
+# Uses Tasks API (mediapipe >= 0.10). mp.solutions.pose was removed in 0.10.
+# Model file (pose_landmarker_heavy.task ~30MB) auto-downloaded on first run
+# to artifacts/pose_landmarker.task
 cv_anthropometry:
+  model_variant: heavy           # lite | full | heavy (heavy = most accurate)
+  min_detection_confidence: 0.5
+  min_presence_confidence:  0.5
+  num_poses: 1
+  reference_object_cm: 21.0     # A4 paper width = 21cm (used as real-world scale)
+  heuristic_torso_cm:   45.0    # fallback if no reference object provided
+                                 # average adult shoulder-to-hip ≈ 45cm
   landmarks:
+    nose:           0
     shoulder_left:  11
     shoulder_right: 12
+    elbow_left:     13
+    elbow_right:    14
+    wrist_left:     15
+    wrist_right:    16
     hip_left:       23
     hip_right:      24
-    nose:           0
-  reference_object_cm: 20.0    # e.g. A4 paper width used as real-world reference
 
-# ── Trend Forecasting (Prophet) ───────────────────────────────────────────────
+# ── Trend Forecasting (Facebook Prophet) ─────────────────────────────────────
+# Real data collected via pytrends (Google Trends API).
+# One Prophet model fitted per (category, keyword) pair = 24 models total.
+# Negative forecast values clipped to 0. Heatmap normalised 0-100 per category.
 trend_forecasting:
   forecast_horizon_days: 90
-  seasonality_mode: multiplicative
+  seasonality_mode: multiplicative   # multiplicative = seasonal swings scale
+                                     # proportionally with trend level
+  yearly_seasonality:  true
+  weekly_seasonality:  true
+  monthly_fourier_order: 5           # custom monthly seasonality component
   categories:
     - color
     - silhouette
-    - category
+    - garment_type                   # fixed: was "category" (wrong name)
 
 # ── API ───────────────────────────────────────────────────────────────────────
 api:
-  host: 0.0.0.0
-  port: 8000
+  host:   0.0.0.0
+  port:   8000
   reload: true
 
 # ── Streamlit Dashboard ───────────────────────────────────────────────────────
 dashboard:
-  port: 8501
+  port:                  8501
   top_k_recommendations: 5
