@@ -16,7 +16,7 @@ Upload a fashion product image → get the top-K visually similar items from a 4
 Powered by **PyTorch ResNet-50** embeddings + **FAISS** cosine similarity index.
 
 ### Body Scan & Personalised Fit
-Upload a front-facing photo → extract body measurements via **MediaPipe Pose Landmarker** → get a personalised fit verdict (Too Small / Perfect Fit / Too Large) from an **DEcision Tree**.
+Upload a front-facing photo → extract body measurements via **MediaPipe Pose Landmarker** → get a personalised fit verdict (Too Small / Perfect Fit / Too Large) from an **Decision Tree**.
 
 ### Trend Oracle
 **90-day seasonal demand forecasts** for fashion colors, silhouettes, and garment types.

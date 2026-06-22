@@ -23,7 +23,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import json
 import numpy as np
 import pandas as pd
 from loguru import logger
@@ -216,23 +215,6 @@ BODY_STATS = {
     "arm":      {"mean": 58.0, "std": 3.5, "min": 46, "max": 74},
 }
 
-# Trend catalogue (unchanged)
-TREND_CATALOGUE = {
-    "color": [
-        "cobalt_blue", "dusty_rose", "olive_green", "terracotta",
-        "butter_yellow", "lavender", "off_white", "chocolate_brown",
-    ],
-    "silhouette": [
-        "oversized", "slim_fit", "relaxed", "cropped", "boxy",
-        "flared", "straight_leg", "wide_leg",
-    ],
-    "garment_type": [
-        "midi_dress", "cargo_pants", "linen_shirt", "denim_jacket",
-        "knit_sweater", "wrap_top", "trench_coat", "jogger",
-    ],
-}
-
-
 # ─── Lookup helper (used by model at inference) ───────────────────────────────
 
 def lookup_size(brand: str, category: str, label: str) -> dict | None:
@@ -348,39 +330,6 @@ def generate_size_data(n: int, seed: int = 42) -> pd.DataFrame:
     return df
 
 
-# ─── Trend data generator (unchanged) ────────────────────────────────────────
-
-def generate_trend_data(seed: int = 42) -> pd.DataFrame:
-    rng   = np.random.default_rng(seed)
-    weeks = pd.date_range("2020-01-06", periods=260, freq="W")
-    rows  = []
-
-    for category, values in TREND_CATALOGUE.items():
-        for val in values:
-            base      = rng.uniform(10, 60)
-            amplitude = rng.uniform(5, 25)
-            phase     = rng.uniform(0, 2 * np.pi)
-            growth    = rng.uniform(-0.02, 0.08)
-
-            for t, ds in enumerate(weeks):
-                seasonal = amplitude * np.sin(2 * np.pi * t / 52 + phase)
-                trend    = base * (1 + growth) ** (t / 52)
-                noise    = rng.normal(0, 3)
-                y        = max(0, trend + seasonal + noise)
-                rows.append({
-                    "ds":       ds.strftime("%Y-%m-%d"),
-                    "category": category,
-                    "value":    val,
-                    "y":        round(y, 2),
-                })
-
-    df = pd.DataFrame(rows)
-    logger.info(
-        f"[DataGen] Trend data: {len(df)} rows, "
-        f"{df['value'].nunique()} trend values, {df['ds'].nunique()} weeks"
-    )
-    return df
-
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -388,8 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("--output",      default="data")
     parser.add_argument("--n_size",      type=int, default=100_000)
     parser.add_argument("--seed",        type=int, default=42)
-    parser.add_argument("--skip-trend",  action="store_true",
-                        help="Skip trend CSV generation — use when you already have real Google Trends data")
+
     args = parser.parse_args()
 
     Path(args.output).mkdir(parents=True, exist_ok=True)
@@ -406,11 +354,3 @@ if __name__ == "__main__":
     size_df.to_csv(size_path, index=False)
     logger.success(f"✅  Saved → {size_path}  ({len(size_df):,} rows)")
 
-    # Only generate synthetic trend data if NOT skipping
-    if args.skip_trend:
-        logger.info("⏭️  Skipping trend data — existing trend_data.csv kept intact")
-    else:
-        trend_df   = generate_trend_data(seed=args.seed)
-        trend_path = os.path.join(args.output, "trend_data.csv")
-        trend_df.to_csv(trend_path, index=False)
-        logger.success(f"✅  Saved → {trend_path} ({len(trend_df):,} rows)")
