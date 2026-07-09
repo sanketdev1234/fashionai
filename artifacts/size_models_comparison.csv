@@ -1,0 +1,7 @@
+model,accuracy,f1_macro,f1_weighted
+Logistic Regression,0.6569,0.6171,0.6579
+Gradient Boosting,0.6506,0.5935,0.649
+Support Vector Machine,0.6493,0.5898,0.6498
+Random Forest,0.6582,0.566,0.6551
+K-Nearest Neighbors,0.6353,0.5138,0.6312
+Decision Tree,0.5997,0.5053,0.6025

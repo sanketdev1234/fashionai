@@ -1,341 +1,227 @@
 """
 src/models/size_fit_model.py
 ─────────────────────────────
-Purchase-Specific Fit Predictor — Single Decision Tree.
+Size Predictor — ANSUR II trained classifier (v3).
 
-Replaces the previous RF + MLP ensemble with a single
-sklearn DecisionTreeClassifier. Justified because:
+Replaces the brand/category/label-size lookup approach entirely.
+This version predicts a clothing size label (XS/S/M/L/XL/XXL)
+directly from body measurements — no brand, no garment category,
+no synthetic size chart.
 
-  1. Training labels are deterministic threshold rules on
-     clearance values — a tree recovers these rules exactly
-     in 2–3 splits. No need for 200 RF trees or a 3-layer MLP.
+Pipeline:
+    MediaPipe body scan → shoulder_width_cm, arm_length_cm
+    User input           → height_cm, weight_kg
+            ↓
+    StandardScaler.transform()  (fitted on ANSUR II, loaded from disk)
+            ↓
+    Best model (Logistic Regression, selected by train_size_models.py)
+            ↓
+    Predicted size label + per-class probability (confidence)
 
-  2. Decision Tree is fully interpretable — you can print
-     the learned rules and verify they match the clearance
-     thresholds used to generate the data.
+Why chest_width_cm from MediaPipe is NOT used as a model input:
+    The model was trained on ANSUR II's shoulder/arm/height/weight
+    ONLY — chest circumference was deliberately excluded from
+    training features (see scripts/preprocess_ansur.py) because
+    it is what the labels were derived from, and including it
+    caused models to trivially recover the threshold rule rather
+    than learn genuine body-proportion patterns. MediaPipe's
+    chest_width_cm (2D frontal width) is also not directly
+    comparable to ANSUR II's chest circumference (full wrap
+    measurement), so it would need a separate conversion model
+    to be usable here — out of scope for this version.
 
-  3. Training time: ~2 seconds vs ~90 seconds for RF + MLP.
-     No GPU required. No DataLoader. No epoch loop.
-
-  4. Same accuracy on this dataset (~100% on train,
-     same generalisation on new samples).
-
-When to upgrade back to ensemble:
-  Replace synthetic size_data.csv with real purchase-return
-  data. Real labels are noisy and subjective — a single tree
-  will underfit. At that point RF or gradient boosting is
-  justified.
-
-Labels:
-  0 = Too Small
-  1 = Perfect Fit
-  2 = Too Large
+Artifacts loaded (produced by scripts/preprocess_ansur.py and
+scripts/train_size_models.py):
+    artifacts/best_size_model.pkl    — trained classifier
+    artifacts/ansur_scaler.pkl       — fitted StandardScaler
+    artifacts/ansur_label_map.json   — {label: index} mapping
+    artifacts/size_model_name.txt    — human-readable model name
 """
 from __future__ import annotations
 
 import json
 import pickle
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.tree import DecisionTreeClassifier, export_text
-from sklearn.preprocessing import LabelEncoder
 from loguru import logger
 
-from src.utils.helpers import get_device, set_seed
 
+# ─── Constants ────────────────────────────────────────────────────────────────
 
-# ─── Label map ────────────────────────────────────────────────────────────────
+FEATURE_ORDER = ["shoulder_cm", "arm_cm", "height_cm", "weight_kg"]
+LABEL_ORDER   = ["XS", "S", "M", "L", "XL", "XXL"]
 
-LABEL_MAP = {0: "Too Small", 1: "Perfect Fit", 2: "Too Large"}
-DIMS      = ["shoulder", "chest", "torso", "arm"]
+# Human-readable guidance shown alongside the predicted label —
+# helps users unfamiliar with abstract size codes.
+SIZE_DESCRIPTIONS = {
+    "XS":  "Extra Small — chest typically under 88 cm",
+    "S":   "Small — chest typically 88-96 cm",
+    "M":   "Medium — chest typically 96-104 cm",
+    "L":   "Large — chest typically 104-112 cm",
+    "XL":  "Extra Large — chest typically 112-120 cm",
+    "XXL": "Double Extra Large — chest typically over 120 cm",
+}
 
 
 # ─── Data classes ─────────────────────────────────────────────────────────────
 
 @dataclass
-class FitRequest:
+class SizeRequest:
     """
-    What the user provides.
-    No raw cm knowledge required — brand + category + label is enough.
+    What the caller provides.
+
+    shoulder_cm and arm_cm come from the MediaPipe body scan
+    (/fit/scan endpoint). height_cm and weight_kg are entered
+    manually by the user — MediaPipe cannot measure these from
+    a single photo without a calibrated reference object.
     """
-    user_body_cm:      dict   # {shoulder_width, chest_width, torso_length, arm_length}
-    brand_name:        str    # "BrandA"
-    garment_category:  str    # "tshirt"
-    label_size:        str    # "M"
+    shoulder_cm: float
+    arm_cm:      float
+    height_cm:   float
+    weight_kg:   float
 
 
 @dataclass
-class FitVerdict:
-    label:        str
-    confidence:   float
-    clearance:    dict
-    message:      str
-    item_size_cm: dict
+class SizeVerdict:
+    predicted_size:    str                  # e.g. "L"
+    confidence:        float                # probability of predicted_size, 0-1
+    description:       str                  # human-readable size description
+    all_probabilities: dict[str, float]      # full probability distribution
+    message:           str                  # full sentence for display
 
 
 # ─── Main model ───────────────────────────────────────────────────────────────
 
 class SizeFitModel:
+    """
+    Loads the pre-trained ANSUR II classifier + scaler and serves
+    predictions. Training happens entirely offline via
+    scripts/preprocess_ansur.py and scripts/train_size_models.py —
+    this class only does inference.
+    """
 
-    SIZE_CHART_PATH = "data/size_chart.json"
+    MODEL_PATH      = "artifacts/best_size_model.pkl"
+    SCALER_PATH     = "artifacts/ansur_scaler.pkl"
+    LABEL_MAP_PATH  = "artifacts/ansur_label_map.json"
+    MODEL_NAME_PATH = "artifacts/size_model_name.txt"
 
-    def __init__(self, cfg: dict):
-        self.cfg         = cfg.get("size_model", {})
-        self.device      = get_device()
-        self.le_brand    = LabelEncoder()
-        self.le_category = LabelEncoder()
-        self.le_label    = LabelEncoder()
-        self.tree: Optional[DecisionTreeClassifier] = None
-        self._is_trained = False
-        self._size_chart: dict = {}
-        self._load_size_chart()
+    def __init__(self, cfg: dict | None = None):
+        self.cfg            = cfg or {}
+        self.model           = None
+        self.scaler          = None
+        self.label_map:     dict[str, int] = {}
+        self.inv_label_map: dict[int, str] = {}
+        self.model_name      = "unknown"
+        self._is_loaded      = False
 
-    # ── Size chart ────────────────────────────────────────────────────────────
+    # ── Load ──────────────────────────────────────────────────────────────────
 
-    def _load_size_chart(self) -> None:
-        p = Path(self.SIZE_CHART_PATH)
-        if p.exists():
-            with open(p) as f:
-                self._size_chart = json.load(f)
-            logger.info(f"[SizeFit] Loaded size chart from {p}")
-        else:
-            logger.warning(
-                f"[SizeFit] size_chart.json not found at {p}. "
-                "Run scripts/generate_data.py first."
-            )
+    def load(self) -> None:
+        """
+        Load all artifacts produced by the offline training pipeline.
+        Raises FileNotFoundError with a clear message if the
+        pipeline has not been run yet.
+        """
+        required = [
+            (self.MODEL_PATH, "trained model"),
+            (self.SCALER_PATH, "scaler"),
+            (self.LABEL_MAP_PATH, "label map"),
+        ]
+        for path_str, label in required:
+            if not Path(path_str).exists():
+                raise FileNotFoundError(
+                    f"[SizeFit] {label} not found at {path_str}. "
+                    f"Run: python scripts/preprocess_ansur.py && "
+                    f"python scripts/train_size_models.py"
+                )
 
-    def resolve_item_cm(self, brand: str, category: str, label: str) -> dict | None:
-        try:
-            return self._size_chart[brand][category][label].copy()
-        except KeyError:
-            return None
+        with open(self.MODEL_PATH, "rb") as f:
+            self.model = pickle.load(f)
 
-    def get_brands(self)                    -> list[str]:
-        return list(self._size_chart.keys())
+        with open(self.SCALER_PATH, "rb") as f:
+            self.scaler = pickle.load(f)
 
-    def get_categories(self, brand: str)    -> list[str]:
-        return list(self._size_chart.get(brand, {}).keys())
+        with open(self.LABEL_MAP_PATH) as f:
+            self.label_map = json.load(f)
+        self.inv_label_map = {v: k for k, v in self.label_map.items()}
 
-    def get_labels(self, brand: str, category: str) -> list[str]:
-        order     = ["XS", "S", "M", "L", "XL", "XXL"]
-        available = list(self._size_chart.get(brand, {}).get(category, {}).keys())
-        return [l for l in order if l in available]
+        if Path(self.MODEL_NAME_PATH).exists():
+            self.model_name = Path(self.MODEL_NAME_PATH).read_text().strip()
+
+        self._is_loaded = True
+        logger.info(
+            f"[SizeFit] Loaded '{self.model_name}' model + scaler + label map "
+            f"({len(self.label_map)} classes)"
+        )
 
     # ── Feature engineering ───────────────────────────────────────────────────
 
     @staticmethod
-    def _build_features(df: pd.DataFrame) -> np.ndarray:
+    def _build_features(req: SizeRequest) -> np.ndarray:
         """
-        15-dim feature vector:
-          user body (4) + item cm (4) + clearance delta (4)
-          + brand_enc (1) + category_enc (1) + label_enc (1)
-
-        The delta features are the most important — the tree
-        splits on them first and recovers the clearance rules
-        in 2–3 nodes.
+        Build the 4-feature vector in the EXACT order the scaler
+        and model were fitted on. Order mismatches silently produce
+        wrong predictions — FEATURE_ORDER is the single source of
+        truth shared with preprocess_ansur.py and train_size_models.py.
         """
-        X_user  = df[["user_shoulder","user_chest","user_torso","user_arm"]].values
-        X_item  = df[["item_shoulder","item_chest","item_torso","item_arm"]].values
-        delta   = X_item - X_user
-        brand   = df[["brand_encoded"]].values
-        cat     = df[["category_encoded"]].values
-        lbl     = df[["label_encoded"]].values
-        return np.hstack([X_user, X_item, delta, brand, cat, lbl]).astype("float32")
-
-    def _request_to_row(self, req: FitRequest, item_cm: dict) -> np.ndarray:
-        brand_enc = (
-            self.le_brand.transform([req.brand_name])[0]
-            if req.brand_name in self.le_brand.classes_ else 0
-        )
-        cat_enc = (
-            self.le_category.transform([req.garment_category])[0]
-            if req.garment_category in self.le_category.classes_ else 0
-        )
-        lbl_enc = (
-            self.le_label.transform([req.label_size])[0]
-            if req.label_size in self.le_label.classes_ else 0
-        )
         row = {
-            "user_shoulder":    req.user_body_cm.get("shoulder_width", 0),
-            "user_chest":       req.user_body_cm.get("chest_width", 0),
-            "user_torso":       req.user_body_cm.get("torso_length", 0),
-            "user_arm":         req.user_body_cm.get("arm_length", 0),
-            "item_shoulder":    item_cm["shoulder"],
-            "item_chest":       item_cm["chest"],
-            "item_torso":       item_cm["torso"],
-            "item_arm":         item_cm["arm"],
-            "brand_encoded":    brand_enc,
-            "category_encoded": cat_enc,
-            "label_encoded":    lbl_enc,
+            "shoulder_cm": req.shoulder_cm,
+            "arm_cm":      req.arm_cm,
+            "height_cm":   req.height_cm,
+            "weight_kg":   req.weight_kg,
         }
-        return self._build_features(pd.DataFrame([row]))
-
-    # ── Training ──────────────────────────────────────────────────────────────
-
-    def train(self, csv_path: str, save_path: str) -> dict:
-        set_seed(42)
-        df = pd.read_csv(csv_path)
-        logger.info(f"[SizeFit] Training on {len(df)} samples")
-
-        # Encode categoricals
-        self.le_brand.fit(df["brand"].fillna("unknown"))
-        self.le_category.fit(df["garment_category"].fillna("unknown"))
-        self.le_label.fit(df["label_size"].fillna("M"))
-
-        df["brand_encoded"]    = self.le_brand.transform(df["brand"].fillna("unknown"))
-        df["category_encoded"] = self.le_category.transform(df["garment_category"].fillna("unknown"))
-        df["label_encoded"]    = self.le_label.transform(df["label_size"].fillna("M"))
-
-        X = self._build_features(df)
-        y = df["label"].values.astype(int)
-
-        # Single Decision Tree
-        # max_depth=5 is enough to capture all clearance threshold
-        # combinations across all brands and categories.
-        # A depth of 2 already achieves ~98% accuracy on this data.
-        # Setting 5 gives the tree room to learn brand-specific
-        # nuances without overfitting.
-        self.tree = DecisionTreeClassifier(
-            max_depth      = self.cfg.get("tree_max_depth", 5),
-            random_state   = 42,
-            class_weight   = "balanced",
-        )
-        self.tree.fit(X, y)
-
-        train_acc = self.tree.score(X, y)
-        logger.info(f"[Tree] Train accuracy: {train_acc:.3f}")
-        logger.info(f"[Tree] Tree depth used: {self.tree.get_depth()}")
-        logger.info(f"[Tree] Number of leaves: {self.tree.get_n_leaves()}")
-
-        # Print the learned rules — this is the key advantage
-        # of a Decision Tree over RF or MLP: full interpretability
-        feature_names = [
-            "user_shoulder","user_chest","user_torso","user_arm",
-            "item_shoulder","item_chest","item_torso","item_arm",
-            "delta_shoulder","delta_chest","delta_torso","delta_arm",
-            "brand","category","label",
-        ]
-        rules = export_text(
-            self.tree,
-            feature_names=feature_names,
-            max_depth=3,          # print top 3 levels only
-        )
-        logger.info(f"[Tree] Learned rules (top 3 levels):\n{rules}")
-
-        # Save
-        save_dir = Path(save_path).parent
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        with open(save_path, "wb") as f:
-            pickle.dump({
-                "tree":             self.tree,
-                "brand_classes":    self.le_brand.classes_.tolist(),
-                "category_classes": self.le_category.classes_.tolist(),
-                "label_classes":    self.le_label.classes_.tolist(),
-            }, f)
-
-        logger.success(f"[SizeFit] Model saved → {save_path}")
-        self._is_trained = True
-        return {
-            "train_acc":   round(train_acc, 4),
-            "tree_depth":  self.tree.get_depth(),
-            "n_leaves":    self.tree.get_n_leaves(),
-        }
-
-    # ── Load ──────────────────────────────────────────────────────────────────
-
-    def load(self, save_path: str) -> None:
-        with open(save_path, "rb") as f:
-            ckpt = pickle.load(f)
-
-        self.tree                 = ckpt["tree"]
-        self.le_brand.classes_    = np.array(ckpt["brand_classes"])
-        self.le_category.classes_ = np.array(ckpt["category_classes"])
-        self.le_label.classes_    = np.array(ckpt["label_classes"])
-
-        self._is_trained = True
-        self._load_size_chart()
-        logger.info(
-            f"[SizeFit] Loaded Decision Tree "
-            f"(depth={self.tree.get_depth()}, "
-            f"leaves={self.tree.get_n_leaves()})"
-        )
+        ordered = [row[col] for col in FEATURE_ORDER]
+        return np.array([ordered], dtype="float64")  # shape (1, 4)
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
-    def predict(self, req: FitRequest) -> FitVerdict:
-        if not self._is_trained:
-            raise RuntimeError("Model not trained or loaded.")
+    def predict(self, req: SizeRequest) -> SizeVerdict:
+        if not self._is_loaded:
+            raise RuntimeError("Call load() before predict().")
 
-        # Resolve label → actual cm
-        item_cm = self.resolve_item_cm(
-            req.brand_name, req.garment_category, req.label_size
-        )
-        if item_cm is None:
-            raise ValueError(
-                f"Size not found: brand='{req.brand_name}', "
-                f"category='{req.garment_category}', "
-                f"label='{req.label_size}'. "
-                f"Available brands: {self.get_brands()}"
-            )
+        X_raw    = self._build_features(req)
+        X_scaled = self.scaler.transform(X_raw)
 
-        X = self._request_to_row(req, item_cm)
-
-        # Predict class and probability
-        pred_idx       = int(self.tree.predict(X)[0])
-        proba          = self.tree.predict_proba(X)[0]
-        confidence     = float(proba[pred_idx])
-        label          = LABEL_MAP[pred_idx]
-
-        # Clearance per dimension
-        dim_map = {
-            "shoulder": ("shoulder_width", "shoulder"),
-            "chest":    ("chest_width",    "chest"),
-            "torso":    ("torso_length",   "torso"),
-            "arm":      ("arm_length",     "arm"),
-        }
-        clearance = {
-            dim: round(item_cm[item_key] - req.user_body_cm.get(user_key, 0), 1)
-            for dim, (user_key, item_key) in dim_map.items()
-        }
-
-
-        if label == "Too Small":
-        # most negative clearance = tightest point
-          worst_dim = min(clearance, key=lambda k: clearance[k])
-          delta_val = clearance[worst_dim]
-          msg = (
-        f"This {req.garment_category} in size {req.label_size} "
-        f"from {req.brand_name} will be too tight. "
-        f"Tightest point: {worst_dim} "
-        f"(item is {abs(delta_val):.1f} cm narrower than your body)."
-    )
-
-        elif label == "Too Large":
-    # most positive clearance = most excess = dominant problem
-           worst_dim = max(clearance, key=lambda k: clearance[k])
-           delta_val = clearance[worst_dim]
-           msg = (
-        f"This {req.garment_category} in size {req.label_size} "
-        f"from {req.brand_name} will be too loose. "
-        f"Most excess: {worst_dim} "
-        f"(item is {delta_val:.1f} cm wider than your body)."
-    )
+        raw_pred = self.model.predict(X_scaled)[0]
+        if isinstance(raw_pred, (np.integer, int)):
+            predicted_label = self.inv_label_map.get(int(raw_pred), str(raw_pred))
         else:
-            msg = (
-                f"Great news — size {req.label_size} in "
-                f"{req.brand_name} {req.garment_category} "
-                f"should be a comfortable, accurate fit for you."
-            )
+            predicted_label = str(raw_pred)
 
-        return FitVerdict(
-            label        = label,
-            confidence   = confidence,
-            clearance    = clearance,
-            message      = msg,
-            item_size_cm = item_cm,
+        # Per-class probabilities, if the model supports it
+        all_probs: dict[str, float] = {}
+        confidence = 1.0
+        if hasattr(self.model, "predict_proba"):
+            proba   = self.model.predict_proba(X_scaled)[0]
+            classes = list(self.model.classes_)
+            for cls, p in zip(classes, proba):
+                cls_label = (
+                    self.inv_label_map.get(int(cls), str(cls))
+                    if isinstance(cls, (np.integer, int))
+                    else str(cls)
+                )
+                all_probs[cls_label] = round(float(p), 4)
+            confidence = all_probs.get(predicted_label, 1.0)
+
+        description = SIZE_DESCRIPTIONS.get(predicted_label, "")
+        message = (
+            f"Based on your body scan and measurements, your recommended "
+            f"size is {predicted_label} ({confidence:.0%} confidence). "
+            f"{description}"
         )
+
+        return SizeVerdict(
+            predicted_size=predicted_label,
+            confidence=round(confidence, 4),
+            description=description,
+            all_probabilities=all_probs,
+            message=message,
+        )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def get_label_order(self) -> list[str]:
+        return LABEL_ORDER

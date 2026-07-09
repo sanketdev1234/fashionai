@@ -18,7 +18,7 @@ from typing import Any
 
 def load_config(path: str | Path = "configs/config.yaml") -> dict[str, Any]:
     """Load YAML config and return as nested dict."""
-    with open(path, "r") as f:
+    with open(path, "r" , encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     return cfg
 

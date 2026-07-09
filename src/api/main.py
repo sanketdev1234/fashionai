@@ -1,15 +1,23 @@
 """
 src/api/main.py
 ────────────────
-FastAPI application — single modular monolith.
+FashionAI API v3.0.0
 
-  POST /recommend          → Visual similarity search (image upload)
-  POST /fit/scan           → CV body scan from a user photo
-  POST /fit/predict        → Fit verdict: brand + category + label size (NEW)
-  GET  /fit/sizes          → Available brands, categories, labels (NEW)
-  GET  /trends/top         → Top-N trending fashion items
-  GET  /trends/heatmap     → Demand heatmap data for a category
-  GET  /health             → Health check
+  POST /recommend       → Visual similarity search (image upload)
+  POST /fit/scan        → CV body scan — extracts body measurements from photo
+  POST /fit/predict     → Size prediction: scan results + height + weight
+                          → XS / S / M / L / XL / XXL
+  GET  /trends/top      → Top-N trending fashion items
+  GET  /trends/heatmap  → Demand heatmap data for a category
+  GET  /health          → Health check
+
+What changed from v2:
+  REMOVED: /fit/sizes   — brand/category/label dropdowns no longer needed
+  REMOVED: /fit/resolve — brand size chart lookup no longer needed
+  UPDATED: /fit/predict — now takes shoulder_cm + arm_cm (from scan)
+                          + height_cm + weight_kg (user input)
+                          returns XS/S/M/L/XL/XXL from ANSUR II model
+  UPDATED: /health      — checks _is_loaded instead of _is_trained
 
 Run:
     uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
@@ -25,7 +33,6 @@ from typing import Annotated, Optional
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel
 from loguru import logger
@@ -33,7 +40,7 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.utils.helpers import load_config, set_seed
 from src.models.feature_extractor import FashionFeatureExtractor
-from src.models.size_fit_model import SizeFitModel, FitRequest
+from src.models.size_fit_model import SizeFitModel, SizeRequest
 from src.models.cv_anthropometry import CVAnthropometry
 from src.models.trend_oracle import TrendOracle
 
@@ -56,22 +63,27 @@ async def lifespan(app: FastAPI):
     CFG = load_config("configs/config.yaml")
     set_seed(CFG["project"]["seed"])
 
-    logger.info("Loading models…")
+    logger.info("Loading models...")
 
+    # 1 — Visual index (unchanged)
     extractor = FashionFeatureExtractor(CFG)
     extractor.build_index()
 
+    # 2 — ANSUR II size model
+    #     Loads: best_size_model.pkl + ansur_scaler.pkl + ansur_label_map.json
+    #     Trained offline by: preprocess_ansur.py + train_size_models.py
     size_model = SizeFitModel(CFG)
-    size_path  = CFG["paths"]["size_model"]
-    if Path(size_path).exists():
-        size_model.load(size_path)
-    else:
-        logger.warning("[API] size_model.pt not found — run scripts/train.py --stage size")
+    try:
+        size_model.load()
+    except FileNotFoundError as e:
+        logger.warning(str(e))
 
+    # 3 — CV body scanner (unchanged)
     cv_scanner = CVAnthropometry(
         reference_width_cm=CFG["cv_anthropometry"]["reference_object_cm"]
     )
 
+    # 4 — Trend oracle (unchanged)
     trend_oracle = TrendOracle(CFG)
     trend_path   = CFG["paths"]["trend_model"]
     if Path(trend_path).exists():
@@ -91,8 +103,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="FashionAI API",
-    description="Visual Recommendation + Fit Prediction + Trend Forecasting",
-    version="2.0.0",
+    description="Visual Recommendation + ANSUR II Size Prediction + Trend Forecasting",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -112,13 +124,13 @@ def health():
         "status": "ok",
         "models": {
             "visual_index": extractor is not None and extractor.faiss_index is not None,
-            "size_model":   size_model is not None and size_model._is_trained,
+            "size_model":   size_model is not None and size_model._is_loaded,
             "trend_oracle": trend_oracle is not None and trend_oracle._is_fitted,
         },
     }
 
 
-# ─── Visual Recommendation ────────────────────────────────────────────────────
+# ─── Visual Recommendation (unchanged) ────────────────────────────────────────
 
 @app.post("/recommend", tags=["Recommendation"])
 async def recommend(
@@ -139,13 +151,21 @@ async def recommend(
     return {"recommendations": results}
 
 
-# ─── CV Body Scan ─────────────────────────────────────────────────────────────
+# ─── CV Body Scan (unchanged) ─────────────────────────────────────────────────
 
 @app.post("/fit/scan", tags=["Fit"])
 async def scan_body(
     file: Annotated[UploadFile, File(description="User upper-body photo")],
     reference_px: Optional[float] = Form(default=None),
 ):
+    """
+    Run MediaPipe pose detection on the uploaded photo.
+    Returns 4 body measurements used as partial input to /fit/predict.
+
+    Output:
+        shoulder_width_cm, chest_width_cm, torso_length_cm, arm_length_cm,
+        confidence (0-1)
+    """
     if cv_scanner is None:
         raise HTTPException(503, "CV scanner not initialised.")
     try:
@@ -162,105 +182,70 @@ async def scan_body(
     return result.to_dict()
 
 
-# ─── Size Chart Lookup ────────────────────────────────────────────────────────
+# ─── Size Prediction (new: ANSUR II model) ────────────────────────────────────
 
-@app.get("/fit/sizes", tags=["Fit"])
-def get_sizes(brand: Optional[str] = None, category: Optional[str] = None):
+class SizePredictRequest(BaseModel):
     """
-    Return available brands, categories, and label sizes from the size chart.
+    Inputs for size prediction.
 
-    Query params:
-      brand    (optional) → filter categories for this brand
-      category (optional) → filter labels for this brand+category
-
-    Output:
-      {brands, categories, labels, item_cm (if brand+category+label given)}
+    shoulder_cm and arm_cm  → from /fit/scan response
+    height_cm and weight_kg → entered manually by the user in the dashboard
     """
-    if size_model is None:
-        raise HTTPException(503, "Size model not loaded.")
-
-    brands = size_model.get_brands()
-
-    if brand and category:
-        labels  = size_model.get_labels(brand, category)
-        cats    = size_model.get_categories(brand)
-        return {"brands": brands, "categories": cats, "labels": labels}
-    elif brand:
-        cats = size_model.get_categories(brand)
-        return {"brands": brands, "categories": cats, "labels": []}
-    else:
-        return {"brands": brands, "categories": [], "labels": []}
-
-
-@app.get("/fit/resolve", tags=["Fit"])
-def resolve_size(brand: str, category: str, label: str):
-    """
-    Resolve a brand + category + label to actual measurements in cm.
-
-    Output: {shoulder, chest, torso, arm} in cm
-    """
-    if size_model is None:
-        raise HTTPException(503, "Size model not loaded.")
-    item_cm = size_model.resolve_item_cm(brand, category, label)
-    if item_cm is None:
-        raise HTTPException(404, f"Size not found: {brand}/{category}/{label}")
-    return item_cm
-
-
-# ─── Fit Prediction ───────────────────────────────────────────────────────────
-
-class FitPredictRequest(BaseModel):
-    user_body_cm:      dict   # from body scan
-    brand_name:        str    # e.g. "BrandA"
-    garment_category:  str    # e.g. "tshirt", "shirt", "jacket", "dress"
-    label_size:        str    # e.g. "S", "M", "L", "XL"
+    shoulder_cm: float
+    arm_cm:      float
+    height_cm:   float
+    weight_kg:   float
 
     model_config = {"json_schema_extra": {"example": {
-        "user_body_cm": {
-            "shoulder_width": 44.0, "chest_width": 94.0,
-            "torso_length": 44.0,   "arm_length": 58.0,
-        },
-        "brand_name":       "BrandA",
-        "garment_category": "tshirt",
-        "label_size":       "M",
+        "shoulder_cm": 41.5,
+        "arm_cm":      89.0,
+        "height_cm":   175.0,
+        "weight_kg":   80.0,
     }}}
 
 
 @app.post("/fit/predict", tags=["Fit"])
-def predict_fit(req: FitPredictRequest):
+def predict_size(req: SizePredictRequest):
     """
-    Predict fit from brand + category + label size.
+    Predict clothing size label (XS/S/M/L/XL/XXL).
 
-    The system maps label → actual cm using the size chart internally.
-    User never needs to know the garment measurements.
+    Model: Logistic Regression trained on ANSUR II (4,082 real soldiers).
+    Features: shoulder_cm, arm_cm, height_cm, weight_kg.
 
-    Output: {label, confidence, clearance, message, item_size_cm}
+    Output:
+        predicted_size    — e.g. "L"
+        confidence        — probability of predicted class (0-1)
+        description       — human readable size description
+        all_probabilities — full probability per class
+        message           — complete user-facing sentence
     """
-    if size_model is None or not size_model._is_trained:
-        raise HTTPException(503, "Size model not trained.")
-
+    if size_model is None or not size_model._is_loaded:
+        raise HTTPException(
+            503,
+            "Size model not loaded. "
+            "Run: python scripts/preprocess_ansur.py && "
+            "python scripts/train_size_models.py"
+        )
     try:
-        verdict = size_model.predict(FitRequest(
-            user_body_cm=req.user_body_cm,
-            brand_name=req.brand_name,
-            garment_category=req.garment_category,
-            label_size=req.label_size,
+        verdict = size_model.predict(SizeRequest(
+            shoulder_cm=req.shoulder_cm,
+            arm_cm=req.arm_cm,
+            height_cm=req.height_cm,
+            weight_kg=req.weight_kg,
         ))
-    except ValueError as e:
-        raise HTTPException(422, str(e))
     except Exception as e:
         raise HTTPException(500, f"Prediction error: {e}")
 
     return {
-        "label":        verdict.label,
-        "confidence":   round(verdict.confidence, 3),
-        "clearance":    verdict.clearance,
-        "message":      verdict.message,
-        "item_size_cm": verdict.item_size_cm,   # resolved cm shown to user
+        "predicted_size":    verdict.predicted_size,
+        "confidence":        round(verdict.confidence, 3),
+        "description":       verdict.description,
+        "all_probabilities": verdict.all_probabilities,
+        "message":           verdict.message,
     }
 
 
-# ─── Trend Endpoints ──────────────────────────────────────────────────────────
+# ─── Trend Endpoints (unchanged) ─────────────────────────────────────────────
 
 @app.get("/trends/top", tags=["Trends"])
 def top_trends(n: int = 10):
