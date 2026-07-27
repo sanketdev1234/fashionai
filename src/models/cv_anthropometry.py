@@ -7,44 +7,43 @@ Compatible with mediapipe >= 0.10.0 (Python 3.12 / 3.13 safe).
 The old mp.solutions.pose API was removed in 0.10 — this file uses the
 replacement mp.tasks.vision.PoseLandmarker API.
 
+OpenCV removed entirely. Image loading uses PIL. MediaPipe receives
+a plain RGB numpy array — it has no dependency on OpenCV.
+
 Pipeline:
   1. Download pose_landmarker_heavy.task model on first run (cached to
      artifacts/pose_landmarker.task — ~30 MB, one-time only).
-  2. Detect 33 pose landmarks in a user's upper-body photo.
-  3. Use a reference object (e.g. A4 paper = 21 cm wide) to convert
-     pixel distances into real-world centimetres.
-  4. Return an AnthropometryResult with shoulder_width, chest_width,
-     torso_length and arm_length.
+  2. Accept an RGB numpy array (from PIL in main.py).
+  3. Detect 33 pose landmarks.
+  4. Convert pixel distances to centimetres using a reference object
+     or a shoulder-hip heuristic fallback.
+  5. Return AnthropometryResult with 4 measurements + confidence.
 
 Expected Input:
-  • A user's upper-body photo (JPEG/PNG) — front-facing, well-lit.
-  • Optional reference_width_cm (float): real-world width of the
-    reference object visible in the frame (default: 21.0 cm for A4).
-  • Optional reference_px (float): pixel width of that reference object.
-    If omitted, the module falls back to a height-based heuristic.
+  RGB numpy array (H, W, 3) produced by PIL in main.py
+  OR a file path string loaded internally via PIL.
 
 Expected Output:
   AnthropometryResult dataclass:
     shoulder_width_cm : float
     chest_width_cm    : float
     torso_length_cm   : float
-    arm_length_cm     : float   (left arm, shoulder-to-wrist)
-    confidence        : float   (0-1, landmark visibility average)
-    annotated_image   : np.ndarray | None  (BGR, landmarks drawn)
+    arm_length_cm     : float
+    confidence        : float  (0-1, landmark visibility average)
 """
 from __future__ import annotations
 
 import math
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
+from PIL import Image
 from loguru import logger
 
 
@@ -63,14 +62,14 @@ def _ensure_model() -> str:
     if not _MODEL_PATH.exists():
         _MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         logger.info(
-            "[CVAnthro] pose_landmarker_heavy.task not found — downloading (~30 MB)…"
+            "[CVAnthro] pose_landmarker_heavy.task not found — downloading (~30 MB)..."
         )
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
         logger.success(f"[CVAnthro] Model saved → {_MODEL_PATH}")
     return str(_MODEL_PATH)
 
 
-# ─── Data classes ─────────────────────────────────────────────────────────────
+# ─── Data class ───────────────────────────────────────────────────────────────
 
 @dataclass
 class AnthropometryResult:
@@ -79,7 +78,6 @@ class AnthropometryResult:
     torso_length_cm   : float
     arm_length_cm     : float
     confidence        : float
-    annotated_image   : Optional[np.ndarray] = field(default=None, repr=False)
 
     def to_dict(self) -> dict:
         return {
@@ -105,15 +103,6 @@ LM = {
     "r_hip":      24,
 }
 
-# Landmark connections to draw (subset — upper body only)
-_UPPER_BODY_CONNECTIONS = [
-    (11, 12),  # shoulders
-    (11, 13), (13, 15),  # left arm
-    (12, 14), (14, 16),  # right arm
-    (11, 23), (12, 24),  # torso sides
-    (23, 24),            # hips
-]
-
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -137,16 +126,18 @@ class CVAnthropometry:
     Upper-body anthropometry via MediaPipe Pose Landmarker (Tasks API).
 
     Compatible with mediapipe >= 0.10.0.
+    No OpenCV dependency — uses PIL for image loading.
+    MediaPipe receives a plain RGB numpy array.
 
     Usage:
         scanner = CVAnthropometry()
-        result  = scanner.measure(bgr_array, reference_px=320)
+        result  = scanner.measure(rgb_array)
         print(result.to_dict())
         scanner.close()
 
-    Or as a context manager:
+    Context manager:
         with CVAnthropometry() as scanner:
-            result = scanner.measure(bgr_array)
+            result = scanner.measure(rgb_array)
     """
 
     def __init__(
@@ -177,33 +168,35 @@ class CVAnthropometry:
         self,
         image_input: str | np.ndarray,
         reference_px: Optional[float] = None,
-        annotate: bool = True,
     ) -> AnthropometryResult:
         """
         Run anthropometry on a single image.
 
         Args:
-            image_input  : File path (str) or BGR numpy array.
+            image_input  : File path (str) OR RGB numpy array (H, W, 3).
+                           When called from main.py the array comes from
+                           PIL Image.open().convert("RGB") → np.array()
+                           and is already RGB — no colour conversion needed.
             reference_px : Pixel width of the reference object in the frame.
-                           If None, uses a shoulder-hip heuristic (~15% less
+                           If None, uses shoulder-hip heuristic (~15% less
                            accurate).
-            annotate     : If True, draw landmark skeleton on returned image.
 
         Returns:
             AnthropometryResult
         """
-        # ── Load image ────────────────────────────────────────────────────────
+        # ── Load → RGB numpy array ────────────────────────────────────────────
         if isinstance(image_input, str):
-            bgr = cv2.imread(image_input)
-            if bgr is None:
-                raise FileNotFoundError(f"Cannot read image: {image_input}")
+            # File path — PIL always returns RGB when convert("RGB") is called
+            pil_img = Image.open(image_input).convert("RGB")
+            rgb = np.array(pil_img)
         else:
-            bgr = image_input.copy()
+            # Already an RGB numpy array from main.py
+            rgb = image_input
 
-        h, w = bgr.shape[:2]
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        h, w = rgb.shape[:2]
 
-        # ── Run landmark detection ────────────────────────────────────────────
+        # ── Run MediaPipe detection ───────────────────────────────────────────
+        # mp.Image(SRGB) expects standard RGB — matches what PIL gives us
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         results  = self._landmarker.detect(mp_image)
 
@@ -235,31 +228,27 @@ class CVAnthropometry:
 
         # ── Measurements ──────────────────────────────────────────────────────
 
-        # Shoulder width
+        # Shoulder width — landmark 11 (left shoulder) ↔ 12 (right shoulder)
         shoulder_px = _pixel_dist(
             lm[LM["l_shoulder"]], lm[LM["r_shoulder"]], h, w
         )
 
-        # Chest ≈ shoulder width × 0.85 (anatomical ratio)
+        # Chest ≈ shoulder × 0.85 (anatomical 2D projection ratio)
         chest_px = shoulder_px * 0.85
 
-        # Torso = midpoint(shoulders) → midpoint(hips)
+        # Torso — midpoint of shoulders → midpoint of hips
         mid_sx = (lm[LM["l_shoulder"]].x + lm[LM["r_shoulder"]].x) / 2 * w
         mid_sy = (lm[LM["l_shoulder"]].y + lm[LM["r_shoulder"]].y) / 2 * h
         mid_hx = (lm[LM["l_hip"]].x    + lm[LM["r_hip"]].x)    / 2 * w
         mid_hy = (lm[LM["l_hip"]].y    + lm[LM["r_hip"]].y)    / 2 * h
         torso_px = math.hypot(mid_sx - mid_hx, mid_sy - mid_hy)
 
-        # Arm = shoulder → elbow + elbow → wrist (left side)
-        upper_arm_px = _pixel_dist(
-            lm[LM["l_shoulder"]], lm[LM["l_elbow"]], h, w
-        )
-        lower_arm_px = _pixel_dist(
-            lm[LM["l_elbow"]], lm[LM["l_wrist"]], h, w
-        )
+        # Arm — left side: shoulder→elbow + elbow→wrist (two-segment chain)
+        upper_arm_px = _pixel_dist(lm[LM["l_shoulder"]], lm[LM["l_elbow"]], h, w)
+        lower_arm_px = _pixel_dist(lm[LM["l_elbow"]],   lm[LM["l_wrist"]], h, w)
         arm_px = upper_arm_px + lower_arm_px
 
-        # ── Confidence ────────────────────────────────────────────────────────
+        # ── Confidence — average visibility of 6 measurement landmarks ────────
         key_indices = [
             LM["l_shoulder"], LM["r_shoulder"],
             LM["l_hip"],      LM["r_hip"],
@@ -267,35 +256,18 @@ class CVAnthropometry:
         ]
         confidence = float(np.mean([_vis(lm[i]) for i in key_indices]))
 
-        # ── Annotated image (plain OpenCV — no mp.solutions.drawing_utils) ────
-        annotated = None
-        if annotate:
-            annotated = bgr.copy()
-            # Draw connections
-            for (i, j) in _UPPER_BODY_CONNECTIONS:
-                pt1 = (int(lm[i].x * w), int(lm[i].y * h))
-                pt2 = (int(lm[j].x * w), int(lm[j].y * h))
-                cv2.line(annotated, pt1, pt2, (255, 255, 0), 2, cv2.LINE_AA)
-            # Draw keypoints
-            for idx in LM.values():
-                cx = int(lm[idx].x * w)
-                cy = int(lm[idx].y * h)
-                cv2.circle(annotated, (cx, cy), 5, (0, 255, 128), -1, cv2.LINE_AA)
-                cv2.circle(annotated, (cx, cy), 5, (0, 0, 0),     1,  cv2.LINE_AA)
-
         return AnthropometryResult(
             shoulder_width_cm=px2cm(shoulder_px),
             chest_width_cm=px2cm(chest_px),
             torso_length_cm=px2cm(torso_px),
             arm_length_cm=px2cm(arm_px),
             confidence=confidence,
-            annotated_image=annotated,
         )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def close(self):
-        """Release the landmarker resources."""
+        """Release MediaPipe landmarker resources."""
         self._landmarker.close()
 
     def __enter__(self):

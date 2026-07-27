@@ -170,13 +170,12 @@ async def scan_body(
         raise HTTPException(503, "CV scanner not initialised.")
     try:
         contents = await file.read()
-        nparr    = np.frombuffer(contents, np.uint8)
-        import cv2
-        bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        pil_img  = Image.open(io.BytesIO(contents)).convert("RGB")
+        rgb = np.array(pil_img)
     except Exception as e:
         raise HTTPException(400, f"Cannot decode image: {e}")
     try:
-        result = cv_scanner.measure(bgr, reference_px=reference_px, annotate=False)
+        result = cv_scanner.measure(rgb, reference_px=reference_px, annotate=False)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return result.to_dict()
