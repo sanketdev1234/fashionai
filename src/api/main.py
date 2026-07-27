@@ -175,7 +175,7 @@ async def scan_body(
     except Exception as e:
         raise HTTPException(400, f"Cannot decode image: {e}")
     try:
-        result = cv_scanner.measure(rgb, reference_px=reference_px, annotate=False)
+        result = cv_scanner.measure(rgb, reference_px=reference_px)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return result.to_dict()
