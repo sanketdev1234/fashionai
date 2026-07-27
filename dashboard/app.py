@@ -33,20 +33,20 @@ API_BASE = "http://localhost:8000"
 
 st.set_page_config(
     page_title="FashionAI",
-    page_icon="👗",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
-st.sidebar.image(
-    "https://via.placeholder.com/200x60?text=FashionAI",
-    use_container_width=True,
-)
+# st.sidebar.image(
+#     "https://via.placeholder.com/200x60?text=FashionAI",
+#     use_container_width=True,
+# )
 st.sidebar.markdown("### Navigation")
 tab_selection = st.sidebar.radio(
     "Choose a module",
-    ["👗 Visual Search", "📐 Body Scan & Size", "📈 Trend Heatmap"],
+    ["Visual Search", "Body Scan & Size", "Trend Heatmap"],
 )
 
 
@@ -116,8 +116,8 @@ def api_trends(category: str):
 # TAB 1 — Visual Search (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
-if tab_selection == "👗 Visual Search":
-    st.title("👗 Visual Similarity Search")
+if tab_selection == "Visual Search":
+    st.title("Visual Similarity Search")
     st.markdown(
         "Upload a fashion product image and get the **top-5 visually similar** "
         "items from the catalogue. Powered by a PyTorch ResNet-50 + FAISS index."
@@ -126,7 +126,7 @@ if tab_selection == "👗 Visual Search":
     uploaded = st.file_uploader(
         "Upload product image", type=["jpg", "jpeg", "png"]
     )
-    top_k = st.slider("Number of results", 1, 10, 5)
+    top_k = st.slider("Number of results", 1, 5, 5)
 
     if uploaded:
         col_input, col_results = st.columns([1, 2])
@@ -161,8 +161,8 @@ if tab_selection == "👗 Visual Search":
 # TAB 2 — Body Scan & Size Prediction (v3 — completely redesigned)
 # ══════════════════════════════════════════════════════════════════════════════
 
-elif tab_selection == "📐 Body Scan & Size":
-    st.title("📐 Body Scan & Size Recommendation")
+elif tab_selection == "Body Scan & Size":
+    st.title("Body Scan & Size Recommendation")
     st.markdown(
         "Upload a **front-facing photo** to extract your body measurements, "
         "then enter your **height and weight** to get your recommended clothing size."
@@ -206,24 +206,24 @@ elif tab_selection == "📐 Body Scan & Size":
             type=["jpg", "jpeg", "png"],
             key="body_scan_photo",
         )
-    with col_ref:
-        ref_px = st.number_input(
-            "Width of reference object in pixels (optional)",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-            help=(
-                "Hold an A4 paper (21 cm wide) in front of you. "
-                "Enter its pixel width here for more accurate measurements. "
-                "Leave 0 to use the automatic heuristic (±15% accuracy)."
-            ),
-        )
-        ref_px = ref_px if ref_px > 0 else None
+    # with col_ref:
+    #     ref_px = st.number_input(
+    #         "Width of reference object in pixels (optional)",
+    #         min_value=0.0,
+    #         value=0.0,
+    #         step=1.0,
+    #         help=(
+    #             "Hold an A4 paper (21 cm wide) in front of you. "
+    #             "Enter its pixel width here for more accurate measurements. "
+    #             "Leave 0 to use the automatic heuristic (±15% accuracy)."
+    #         ),
+    #     )
+        ref_px = None
 
     scan_result = None
 
     if user_photo:
-        if st.button("🔍 Scan Body", type="primary"):
+        if st.button("Scan Body", type="primary"):
             with st.spinner("Analysing pose..."):
                 scan_result = api_scan(user_photo.read(), ref_px)
             if scan_result:
@@ -232,16 +232,16 @@ elif tab_selection == "📐 Body Scan & Size":
                 st.markdown(
                     f"<div style='padding:8px 14px;border-radius:6px;"
                     f"background:{'#e6f4ea' if conf>=0.75 else '#fef3cd'};'>"
-                    f"✅ <strong>Confidence: {conf:.0%}</strong></div>",
+                    f"<strong>Confidence: {conf:.0%}</strong></div>",
                     unsafe_allow_html=True,
-                )
+                ) 
                 st.markdown("<br>", unsafe_allow_html=True)
 
                 mc = st.columns(4)
-                mc[0].metric("🦴 Shoulder", f"{scan_result['shoulder_width_cm']:.1f} cm")
-                mc[1].metric("💪 Chest",    f"{scan_result['chest_width_cm']:.1f} cm")
-                mc[2].metric("📏 Torso",    f"{scan_result['torso_length_cm']:.1f} cm")
-                mc[3].metric("💪 Arm",      f"{scan_result['arm_length_cm']:.1f} cm")
+                mc[0].metric(" Shoulder", f"{scan_result['shoulder_width_cm']:.1f} cm")
+                mc[1].metric(" Chest",    f"{scan_result['chest_width_cm']:.1f} cm")
+                mc[2].metric(" Torso",    f"{scan_result['torso_length_cm']:.1f} cm")
+                mc[3].metric(" Arm",      f"{scan_result['arm_length_cm']:.1f} cm")
 
                 st.session_state["scan_result"] = scan_result
                 st.success("Body scan complete. Scroll down to Step 2.")
@@ -281,7 +281,7 @@ elif tab_selection == "📐 Body Scan & Size":
     if scan_data is None:
         st.info("Complete Step 1 first — scan your body photo to extract measurements.")
     else:
-        if st.button("🎯 Predict My Size", type="primary"):
+        if st.button("Predict My Size", type="primary"):
             shoulder_cm = scan_data["shoulder_width_cm"]
             arm_cm      = scan_data["arm_length_cm"]
 
@@ -307,7 +307,7 @@ elif tab_selection == "📐 Body Scan & Size":
                 # ── Main verdict ──────────────────────────────────────────
                 st.markdown(
                     f"<h2 style='text-align:center;color:{size_color}'>"
-                    f"👕 Your Recommended Size: <strong>{size}</strong>"
+                    f" Your Recommended Size: <strong>{size}</strong>"
                     f" ({confidence:.0%} confidence)</h2>",
                     unsafe_allow_html=True,
                 )
@@ -382,7 +382,7 @@ elif tab_selection == "📐 Body Scan & Size":
                 )
 
                 st.caption(
-                    "⚠️ Size predictions are based on ANSUR II (US Army male anthropometric data). "
+                    " Size predictions are based on ANSUR II (US Army male anthropometric data). "
                     "Actual fit may vary by brand, garment style, and personal preference. "
                     "Model accuracy: ~65% exact match on held-out test data (6-class problem)."
                 )
@@ -392,8 +392,8 @@ elif tab_selection == "📐 Body Scan & Size":
 # TAB 3 — Trend Heatmap (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
-elif tab_selection == "📈 Trend Heatmap":
-    st.title("📈 Trend Oracle — Seasonal Demand Heatmap")
+elif tab_selection == "Trend Heatmap":
+    st.title("Trend Oracle — Seasonal Demand Heatmap")
     st.markdown(
         "Visualise **90-day demand forecasts** for fashion trends (colors, "
         "silhouettes, garment types) powered by Facebook Prophet trained on "
@@ -405,7 +405,7 @@ elif tab_selection == "📈 Trend Heatmap":
         ["color", "silhouette", "garment_type"],
     )
 
-    if st.button("🔮 Load Forecast", type="primary"):
+    if st.button(" Load Forecast", type="primary"):
         with st.spinner("Fetching forecast data..."):
             data = api_trends(category)
 
@@ -439,7 +439,7 @@ elif tab_selection == "📈 Trend Heatmap":
                 .rename(columns={"value": "Trend", "avg_demand": "Avg Demand"})
             )
             top_rows["Avg Demand"] = top_rows["Avg Demand"].round(1)
-            st.subheader("🏆 Top Trends by Average Forecasted Demand")
+            st.subheader(" Top Trends by Average Forecasted Demand")
             st.dataframe(top_rows, use_container_width=True, hide_index=True)
         else:
             st.info(
