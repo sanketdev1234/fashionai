@@ -1,20 +1,4 @@
-"""
-dashboard/app.py
-─────────────────
-FashionAI Streamlit Dashboard v3.0.0
 
-What changed from v2:
-  Body Scan & Fit tab completely redesigned:
-    - Removed: Brand / Garment Type / Size Label dropdowns
-    - Removed: Item Technical Spec inputs
-    - Added:   Height (cm) and Weight (kg) manual inputs
-    - Changed: Verdict now shows recommended SIZE LABEL (XS/S/M/L/XL/XXL)
-               instead of Too Small / Perfect Fit / Too Large
-    - Added:   Full probability bar chart (confidence per size class)
-    - Added:   Clear explanation of what the model is doing
-
-  All other tabs (Visual Search, Trend Heatmap) unchanged.
-"""
 from __future__ import annotations
 
 import sys

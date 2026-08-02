@@ -1,42 +1,4 @@
-"""
-src/models/size_fit_model.py
-─────────────────────────────
-Size Predictor — ANSUR II trained classifier (v3).
 
-Replaces the brand/category/label-size lookup approach entirely.
-This version predicts a clothing size label (XS/S/M/L/XL/XXL)
-directly from body measurements — no brand, no garment category,
-no synthetic size chart.
-
-Pipeline:
-    MediaPipe body scan → shoulder_width_cm, arm_length_cm
-    User input           → height_cm, weight_kg
-            ↓
-    StandardScaler.transform()  (fitted on ANSUR II, loaded from disk)
-            ↓
-    Best model (Logistic Regression, selected by train_size_models.py)
-            ↓
-    Predicted size label + per-class probability (confidence)
-
-Why chest_width_cm from MediaPipe is NOT used as a model input:
-    The model was trained on ANSUR II's shoulder/arm/height/weight
-    ONLY — chest circumference was deliberately excluded from
-    training features (see scripts/preprocess_ansur.py) because
-    it is what the labels were derived from, and including it
-    caused models to trivially recover the threshold rule rather
-    than learn genuine body-proportion patterns. MediaPipe's
-    chest_width_cm (2D frontal width) is also not directly
-    comparable to ANSUR II's chest circumference (full wrap
-    measurement), so it would need a separate conversion model
-    to be usable here — out of scope for this version.
-
-Artifacts loaded (produced by scripts/preprocess_ansur.py and
-scripts/train_size_models.py):
-    artifacts/best_size_model.pkl    — trained classifier
-    artifacts/ansur_scaler.pkl       — fitted StandardScaler
-    artifacts/ansur_label_map.json   — {label: index} mapping
-    artifacts/size_model_name.txt    — human-readable model name
-"""
 from __future__ import annotations
 
 import json

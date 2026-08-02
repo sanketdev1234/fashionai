@@ -1,35 +1,4 @@
-"""
-scripts/train_size_models.py
-───────────────────────────────
-Step 2 — Train and compare multiple classifiers on the preprocessed
-ANSUR II size dataset. Same train/test split used for every model —
-required for a fair, apples-to-apples comparison.
 
-Run:
-    python scripts/train_size_models.py
-
-Input:
-    data/ansur_processed.csv   — output of preprocess_ansur.py
-
-Output:
-    artifacts/size_models_comparison.csv  — accuracy/F1 table for all models
-    artifacts/best_size_model.pkl         — winning model, pickled
-    artifacts/size_model_name.txt         — name of the winning model
-
-Models compared:
-    1. Logistic Regression  — linear baseline
-    2. K-Nearest Neighbors  — distance-based, finds similar body types
-    3. Decision Tree        — single tree, interpretable
-    4. Support Vector Machine — kernel-based, good with scaled features
-    5. Random Forest        — ensemble of trees, handles non-linear interactions
-    6. Gradient Boosting    — sequential ensemble, often highest accuracy
-
-Selection criterion:
-    Best model = highest macro-averaged F1 score on the test set.
-    Macro F1 (not accuracy) is used because the dataset is imbalanced
-    (L has 1,314 samples, XS has only 41) — accuracy alone would hide
-    poor performance on minority classes like XS and XXL.
-"""
 from __future__ import annotations
 
 import pickle

@@ -1,36 +1,4 @@
-"""
-scripts/preprocess_ansur.py
-─────────────────────────────
-Step 1 — Complete preprocessing pipeline for ANSUR II size prediction.
 
-Loads ANSUR_II_MALE.csv, converts units, selects features, derives
-size labels from chest circumference, removes outliers, scales
-features, and saves a clean train-ready dataset + fitted scaler.
-
-This script runs ONCE. Every model in model_training.py loads the
-output of this script — guaranteeing all models train and test on
-identical data, which is required for a fair comparison.
-
-Run:
-    python scripts/preprocess_ansur.py
-
-Inputs:
-    data/ANSUR_II_MALE.csv   — raw ANSUR II dataset (4,082 rows, 99 cols, mm)
-
-Outputs:
-    data/ansur_processed.csv     — clean features + label, ready for train/test split
-    artifacts/ansur_scaler.pkl   — fitted StandardScaler (reused at inference time)
-    artifacts/ansur_label_map.json — size label ↔ integer encoding
-
-Pipeline:
-    1. Load raw CSV (handles ANSUR II's index-column offset)
-    2. Unit conversion: mm → cm, m → cm
-    3. Feature selection: shoulder, chest, arm, height, weight
-    4. Label derivation: chest_cm → XS/S/M/L/XL/XXL via fixed thresholds
-    5. EDA: class distribution, feature stats, correlation
-    6. Outlier removal: IQR method per feature
-    7. Feature scaling: StandardScaler (fit once, reused everywhere)
-"""
 from __future__ import annotations
 
 import json

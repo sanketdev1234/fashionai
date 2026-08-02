@@ -1,36 +1,4 @@
-"""
-src/models/cv_anthropometry.py
-──────────────────────────────
-Upper-body measurement extraction using MediaPipe Pose Landmarker (Tasks API).
 
-Compatible with mediapipe >= 0.10.0 (Python 3.12 / 3.13 safe).
-The old mp.solutions.pose API was removed in 0.10 — this file uses the
-replacement mp.tasks.vision.PoseLandmarker API.
-
-OpenCV removed entirely. Image loading uses PIL. MediaPipe receives
-a plain RGB numpy array — it has no dependency on OpenCV.
-
-Pipeline:
-  1. Download pose_landmarker_heavy.task model on first run (cached to
-     artifacts/pose_landmarker.task — ~30 MB, one-time only).
-  2. Accept an RGB numpy array (from PIL in main.py).
-  3. Detect 33 pose landmarks.
-  4. Convert pixel distances to centimetres using a reference object
-     or a shoulder-hip heuristic fallback.
-  5. Return AnthropometryResult with 4 measurements + confidence.
-
-Expected Input:
-  RGB numpy array (H, W, 3) produced by PIL in main.py
-  OR a file path string loaded internally via PIL.
-
-Expected Output:
-  AnthropometryResult dataclass:
-    shoulder_width_cm : float
-    chest_width_cm    : float
-    torso_length_cm   : float
-    arm_length_cm     : float
-    confidence        : float  (0-1, landmark visibility average)
-"""
 from __future__ import annotations
 
 import math

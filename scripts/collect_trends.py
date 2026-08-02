@@ -1,40 +1,4 @@
-"""
-scripts/collect_trends.py
-──────────────────────────
-Real trend data collector using Google Trends (pytrends).
 
-Fetches weekly interest-over-time data for every fashion keyword in your
-catalogue and writes a drop-in replacement for data/trend_data.csv that
-the TrendOracle and Prophet models consume directly.
-
-Usage:
-    # Basic — fetches last 5 years, India geo, all categories
-    python scripts/collect_trends.py
-
-    # Custom geo and timeframe
-    python scripts/collect_trends.py --geo US --timeframe "today 3-y"
-
-    # Specific categories only
-    python scripts/collect_trends.py --categories color silhouette
-
-    # Dry run — print what would be fetched, no API calls
-    python scripts/collect_trends.py --dry-run
-
-Output:
-    data/trend_data.csv  ← same format as synthetic data, drop-in replacement
-    data/trend_data_raw/ ← raw per-keyword CSVs (backup/debug)
-
-Rate limiting:
-    Google Trends allows ~5 keywords per request and rate-limits aggressively.
-    This script adds delays between requests automatically. Full collection
-    (~24 keywords) takes approximately 3–5 minutes.
-
-Notes:
-    - Google Trends returns relative interest (0–100), not absolute counts.
-      This is fine for Prophet — it models the shape, not the magnitude.
-    - If you get 429 errors, increase --delay (default: 60 seconds).
-    - geo='IN' = India, geo='US' = United States, geo='' = worldwide.
-"""
 from __future__ import annotations
 
 import argparse

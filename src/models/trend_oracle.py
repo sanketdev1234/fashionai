@@ -1,25 +1,4 @@
-"""
-src/models/trend_oracle.py
-───────────────────────────
-Trend Oracle — Fashion Forecasting with Facebook Prophet.
 
-Predicts upcoming demand for fashion categories (color, silhouette,
-garment type) by fitting separate Prophet models per category value.
-
-Expected Input  (trend_data.csv):
-  ds         : date (YYYY-MM-DD)
-  category   : one of {"color", "silhouette", "garment_type"}
-  value      : specific category value (e.g., "olive_green", "oversized", "maxi_dress")
-  y          : demand / search volume / sales count (numeric)
-
-Expected Output:
-  forecast()  → dict mapping each (category, value) → DataFrame with
-                ds, yhat, yhat_lower, yhat_upper for next N days.
-
-  top_trends() → list of top-K trending items with growth metrics.
-
-  heatmap_data() → pivot-ready DataFrame for Streamlit Folium heatmap.
-"""
 from __future__ import annotations
 
 import pickle

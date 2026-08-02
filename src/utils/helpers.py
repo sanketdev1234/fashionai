@@ -1,8 +1,4 @@
-"""
-src/utils/helpers.py
-────────────────────
-Shared utilities: config loader, logger setup, device resolver.
-"""
+
 from __future__ import annotations
 
 import random

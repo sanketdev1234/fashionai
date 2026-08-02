@@ -1,23 +1,4 @@
 """
-src/api/main.py
-────────────────
-FashionAI API v3.0.0
-
-  POST /recommend       → Visual similarity search (image upload)
-  POST /fit/scan        → CV body scan — extracts body measurements from photo
-  POST /fit/predict     → Size prediction: scan results + height + weight
-                          → XS / S / M / L / XL / XXL
-  GET  /trends/top      → Top-N trending fashion items
-  GET  /trends/heatmap  → Demand heatmap data for a category
-  GET  /health          → Health check
-
-What changed from v2:
-  REMOVED: /fit/sizes   — brand/category/label dropdowns no longer needed
-  REMOVED: /fit/resolve — brand size chart lookup no longer needed
-  UPDATED: /fit/predict — now takes shoulder_cm + arm_cm (from scan)
-                          + height_cm + weight_kg (user input)
-                          returns XS/S/M/L/XL/XXL from ANSUR II model
-  UPDATED: /health      — checks _is_loaded instead of _is_trained
 
 Run:
     uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload

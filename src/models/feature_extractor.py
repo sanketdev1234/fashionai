@@ -1,24 +1,4 @@
-"""
-src/models/feature_extractor.py
-────────────────────────────────
-PyTorch ResNet-50 visual feature extractor with FAISS vector index.
 
-Replaces the original TensorFlow/Keras ResNet50 + sklearn NearestNeighbors.
-
-Key improvements:
-  • Pure PyTorch backbone (configurable: resnet50, efficientnet_b3, vit_b_16)
-  • Batched GPU inference via DataLoader
-  • FAISS index for sub-100ms cosine search at 100k+ scale
-  • Persistent artifacts (embeddings.pt + faiss.index)
-
-Expected Input  : A directory of fashion product images (JPEG/PNG).
-Expected Output : embeddings.pt  → (N, 2048) float32 tensor
-                  faiss.index    → binary FAISS index
-                  filenames.pkl  → list of image paths (length N)
-
-Query Input     : Single PIL Image or image file path
-Query Output    : List[dict] with keys: path, score (cosine similarity)
-"""
 from __future__ import annotations
 
 import os
